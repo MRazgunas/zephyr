@@ -24,6 +24,16 @@ properties:
         required: false
         description: Power pin
 
+    has-tranciever:
+        type: boolean
+        required: false
+        description: Enable tranciever support. Supported by L4 and H7 families
+
+    pwrsel-gpios:
+        type: phandle-array
+        required: false
+        description: 1V8 logic enable pin. Supported by L4 and H7 families
+
     pinctrl-0:
       type: phandles
       required: false

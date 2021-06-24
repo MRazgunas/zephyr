@@ -35,6 +35,12 @@ struct stm32_sdmmc_priv {
 		int pin;
 		int flags;
 	} pe;
+	struct {
+		const char *name;
+		const struct device *port;
+		int pin;
+		int flags;
+	} ps;
 	struct stm32_pclken pclken;
 	struct {
 		const struct soc_gpio_pinctrl *list;
@@ -102,6 +108,9 @@ static int stm32_sdmmc_access_init(struct disk_info *disk)
 		return err;
 	}
 
+#if DT_INST_NODE_HAS_PROP(0, pwrsel_gpios)
+	priv->hsd.Init.Transceiver = SDMMC_TRANSCEIVER_ENABLE;
+#endif
 	err = HAL_SD_Init(&priv->hsd);
 	if (err != HAL_OK) {
 		LOG_ERR("failed to init stm32_sdmmc");
@@ -350,6 +359,31 @@ static int stm32_sdmmc_pwr_uninit(struct stm32_sdmmc_priv *priv)
 	return 0;
 }
 
+static int stm32_sdmmc_pwrselect_init(struct stm32_sdmmc_priv *priv)
+{
+	if (!priv->ps.name) {
+		return 0;
+	}
+
+	priv->ps.port = device_get_binding(priv->ps.name);
+	if (!priv->ps.port) {
+		return -ENODEV;
+	}
+	/* Initilize in 2.9V mode, HAL will switch card to 1.8V mode if avialable */
+	return gpio_pin_configure(priv->ps.port, priv->ps.pin,
+				 priv->ps.flags | GPIO_OUTPUT_INACTIVE);
+}
+
+static int stm32_sdmmc_pwrselect_uninit(struct stm32_sdmmc_priv *priv)
+{
+	if (!priv->ps.name) {
+		return 0;
+	}
+
+	gpio_pin_configure(priv->ps.port, priv->ps.pin, GPIO_DISCONNECTED);
+	return 0;
+}
+
 static int disk_stm32_sdmmc_init(const struct device *dev)
 {
 	struct stm32_sdmmc_priv *priv = dev->data;
@@ -370,9 +404,14 @@ static int disk_stm32_sdmmc_init(const struct device *dev)
 		return err;
 	}
 
-	err = stm32_sdmmc_pwr_init(priv);
+	err = stm32_sdmmc_pwrselect_init(priv);
 	if (err) {
 		goto err_card_detect;
+	}
+
+	err = stm32_sdmmc_pwr_init(priv);
+	if (err) {
+		goto err_pwrsel;
 	}
 
 	if (stm32_sdmmc_card_present(priv)) {
@@ -390,9 +429,32 @@ static int disk_stm32_sdmmc_init(const struct device *dev)
 
 err_pwr:
 	stm32_sdmmc_pwr_uninit(priv);
+err_pwrsel:
+	stm32_sdmmc_pwrselect_uninit(priv);
 err_card_detect:
 	stm32_sdmmc_card_detect_uninit(priv);
 	return err;
+}
+
+void HAL_SDEx_DriveTransceiver_1_8V_Callback(FlagStatus status)
+{
+	const struct device *dev = device_get_binding(DT_LABEL(DT_DRV_INST(0)));
+	if (!dev) {
+		return;
+	}
+
+	struct stm32_sdmmc_priv *priv = dev->data;
+	if (!priv->ps.name) {
+		return;
+	}
+
+	if (status == RESET) {
+		/* Set 2.9V mode */
+		gpio_pin_set(priv->ps.port, priv->ps.pin, 0);
+	} else {
+		/* Set 1.8V mode */
+		gpio_pin_set(priv->ps.port, priv->ps.pin, 1);
+	}
 }
 
 #if DT_NODE_HAS_STATUS(DT_DRV_INST(0), okay)
@@ -416,6 +478,13 @@ static struct stm32_sdmmc_priv stm32_sdmmc_priv_1 = {
 		.name = DT_INST_GPIO_LABEL(0, pwr_gpios),
 		.pin = DT_INST_GPIO_PIN(0, pwr_gpios),
 		.flags = DT_INST_GPIO_FLAGS(0, pwr_gpios),
+	},
+#endif
+#if DT_INST_NODE_HAS_PROP(0, pwrsel_gpios)
+	.ps = {
+		.name = DT_INST_GPIO_LABEL(0, pwrsel_gpios),
+		.pin = DT_INST_GPIO_PIN(0, pwrsel_gpios),
+		.flags = DT_INST_GPIO_FLAGS(0, pwrsel_gpios),
 	},
 #endif
 	.pclken = {
